@@ -19,7 +19,7 @@ module Script
           extension_point_type:,
           script_name:,
           script_content:,
-          compiled_type:,
+          compiled_type: nil,
           metadata:,
           config_ui:
         )
@@ -39,7 +39,6 @@ module Script
             extension_point_type: @extension_point_type,
             script_name: @script_name,
             script_content: @script_content,
-            compiled_type: @compiled_type,
             api_key: api_key,
             force: force,
             metadata: @metadata,

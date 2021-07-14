@@ -46,7 +46,6 @@ describe Script::Layers::Domain::PushPackage do
         kwargs[:extension_point_type] == extension_point_type &&
           kwargs[:script_name] == script_name &&
           kwargs[:script_content] == script_content &&
-          kwargs[:compiled_type] == compiled_type &&
           kwargs[:api_key] == api_key &&
           kwargs[:uuid] == uuid
       end

@@ -1,6 +1,10 @@
 Unreleased
 ------
 
+Version 1.13.2
+--------------
+* [1382](https://github.com/Shopify/shopify-cli/pull/1382): Client side module upload for Scripts
+
 Version 1.13.1
 --------------
 * [1272](https://github.com/Shopify/shopify-app-cli/pull/1272): Fix minor bug with extension serve for UI extensions

@@ -15,29 +15,44 @@ module Script
           extension_point_type:,
           script_name:,
           script_content:,
-          compiled_type:,
           api_key: nil,
           force: false,
           metadata:,
           config_ui:
         )
-          query_name = "app_script_update_or_create"
+          url = UploadScript.new(ctx).call(api_key, script_content)
+
+          query_name = "app_script_set"
+
+          # TODO: to be properly set https://github.com/Shopify/script-service/pull/3416
+          script_json_version = "1"
+          configuration_ui = true
+          configuration_definition = {
+            type: "single",
+            schema: [{
+              key: "stylePrefix",
+              name: "Product style tag prefix",
+              type: "single_line_text_field",
+              defaultValue: "style:",
+            }],
+          }
+
           variables = {
             uuid: uuid,
             extensionPointName: extension_point_type.upcase,
             title: script_name,
-            configUi: config_ui&.content,
-            sourceCode: Base64.encode64(script_content),
-            language: compiled_type,
             force: force,
             schemaMajorVersion: metadata.schema_major_version.to_s, # API expects string value
             schemaMinorVersion: metadata.schema_minor_version.to_s, # API expects string value
-            useMsgpack: metadata.use_msgpack,
+            scriptJsonVersion: script_json_version,
+            configurationUi: configuration_ui,
+            configurationDefinition: configuration_definition.to_json,
+            moduleUploadUrl: url,
           }
-          resp_hash = script_service_request(query_name: query_name, api_key: api_key, variables: variables)
-          user_errors = resp_hash["data"]["appScriptUpdateOrCreate"]["userErrors"]
+          resp_hash = MakeRequest.new(ctx).call(query_name: query_name, api_key: api_key, variables: variables)
+          user_errors = resp_hash["data"]["appScriptSet"]["userErrors"]
 
-          return resp_hash["data"]["appScriptUpdateOrCreate"]["appScript"]["uuid"] if user_errors.empty?
+          return resp_hash["data"]["appScriptSet"]["appScript"]["uuid"] if user_errors.empty?
 
           if user_errors.any? { |e| e["tag"] == "already_exists_error" }
             raise Errors::ScriptRepushError, uuid
@@ -61,10 +76,9 @@ module Script
         def get_app_scripts(api_key:, extension_point_type:)
           query_name = "get_app_scripts"
           variables = { appKey: api_key, extensionPointName: extension_point_type.upcase }
-          script_service_request(query_name: query_name, api_key: api_key, variables: variables)["data"]["appScripts"]
+          MakeRequest.new(ctx).call(query_name: query_name, api_key: api_key,
+variables: variables)["data"]["appScripts"]
         end
-
-        private
 
         class ScriptServiceAPI < ShopifyCli::API
           property(:api_key, accepts: String)
@@ -97,43 +111,91 @@ module Script
         end
         private_constant(:PartnersProxyAPI)
 
-        def script_service_request(query_name:, variables: nil, **options)
-          resp = if ENV["BYPASS_PARTNERS_PROXY"]
-            ScriptServiceAPI.query(ctx, query_name, variables: variables, **options)
-          else
-            proxy_through_partners(query_name: query_name, variables: variables, **options)
+        class MakeRequest
+          attr_reader :ctx
+
+          def initialize(ctx)
+            @ctx = ctx
           end
-          raise_if_graphql_failed(resp)
-          resp
-        end
 
-        def proxy_through_partners(query_name:, variables: nil, **options)
-          options[:variables] = variables.to_json if variables
-          resp = PartnersProxyAPI.query(ctx, query_name, **options)
-          raise_if_graphql_failed(resp)
-          JSON.parse(resp["data"]["scriptServiceProxy"])
-        end
+          def call(query_name:, variables: nil, **options)
+            resp = if ENV["BYPASS_PARTNERS_PROXY"]
+              ScriptServiceAPI.query(ctx, query_name, variables: variables, **options)
+            else
+              proxy_through_partners(query_name: query_name, variables: variables, **options)
+            end
+            raise_if_graphql_failed(resp)
+            resp
+          end
 
-        def raise_if_graphql_failed(response)
-          raise Errors::EmptyResponseError if response.nil?
+          def proxy_through_partners(query_name:, variables: nil, **options)
+            options[:variables] = variables.to_json if variables
+            resp = PartnersProxyAPI.query(ctx, query_name, **options)
+            raise_if_graphql_failed(resp)
+            JSON.parse(resp["data"]["scriptServiceProxy"])
+          end
 
-          return unless response.key?("errors")
-          case error_code(response["errors"])
-          when "forbidden"
-            raise Errors::ForbiddenError
-          when "forbidden_on_shop"
-            raise Errors::ShopAuthenticationError
-          when "app_not_installed_on_shop"
-            raise Errors::AppNotInstalledError
-          else
-            raise Errors::GraphqlError, response["errors"]
+          def raise_if_graphql_failed(response)
+            raise Errors::EmptyResponseError if response.nil?
+
+            return unless response.key?("errors")
+            case error_code(response["errors"])
+            when "forbidden"
+              raise Errors::ForbiddenError
+            when "forbidden_on_shop"
+              raise Errors::ShopAuthenticationError
+            when "app_not_installed_on_shop"
+              raise Errors::AppNotInstalledError
+            else
+              raise Errors::GraphqlError, response["errors"]
+            end
+          end
+
+          def error_code(errors)
+            errors.map do |e|
+              code = e.dig("extensions", "code")
+              return code if code
+            end
           end
         end
 
-        def error_code(errors)
-          errors.map do |e|
-            code = e.dig("extensions", "code")
-            return code if code
+        class UploadScript
+          attr_reader :ctx
+
+          def initialize(ctx)
+            @ctx = ctx
+          end
+
+          def call(api_key, script_content)
+            apply_module_upload_url(api_key).tap do |url|
+              upload(url, script_content)
+            end
+          end
+
+          private
+
+          def apply_module_upload_url(api_key)
+            query_name = "module_upload_url_generate"
+            variables = {}
+            resp_hash = MakeRequest.new(ctx).call(query_name: query_name, api_key: api_key, variables: variables)
+            user_errors = resp_hash["data"]["moduleUploadUrlGenerate"]["userErrors"]
+
+            raise Errors::GraphqlError, user_errors if user_errors.any?
+            resp_hash["data"]["moduleUploadUrlGenerate"]["url"]
+          end
+
+          def upload(url, script_content)
+            url = URI(url)
+
+            https = Net::HTTP.new(url.host, url.port)
+            https.use_ssl = true
+
+            request = Net::HTTP::Put.new(url)
+            request["Content-Type"] = "application/wasm"
+            request.body = script_content
+
+            response = https.request(request)
+            raise Errors::ScriptUploadError unless response.code == "200"
           end
         end
       end
